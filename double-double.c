@@ -165,12 +165,15 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 /* code below cannot be compiled with -Ofast as this makes the compiler break some C rules that we need, so make sure of this here */
+/* we also need -msse2 and -mfpmath=sse to actually use the sse instructions for float and double maths */
+/* there seems to be no way to duplicate "-fexcess-precision=standard" using a pragma - so that must be present on the command line [see comments at head of this file that suggest "-fexcess-precision=standard" is not required any more ] */
 #if (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 7)) || defined(__clang__)
  #pragma GCC push_options
  #pragma GCC optimize ("-O3") /* cannot use Ofast, normally -O3 is OK. Note macro expansion does not work here ! */
- #if defined(_WIN32) && !defined(_WIN64)
-  #pragma GCC target("sse2")
- #endif
+ // based on  https://jdebp.uk/FGA/predefined-macros-processor.html "__i386__" is set by GCC,Clang,Intel which is good enough as the outer #if limits us to gcc and clang
+ #ifdef __i386__
+   #pragma GCC target("sse2,fpmath=sse") /* -msse2 and -mfpmath=sse */
+ #endif 
 #endif
 
 static inline void fasttwosum(double *xh, double *xl,double a,double b)  // adds a and b to give double double "x". Requires |a| >= |b|
@@ -336,27 +339,43 @@ void dd_mult_power10( double *ohi, double *olo, double dh,double dl, int power )
   	{*ohi=dh; /* 10^0=1 so can just return d - we expect this special case to be relatively common so worth doing */
   	 *olo=dl;
     }
-  else if(power<-200) // need to do in 2 multiplies rather than 1 as the max -ve exponent for a normalised double is -308. Picked -200 so we keep full precision of double double
-    {if((-power)-200 >= sizeof(NegPowerOf10_hi)/sizeof(NegPowerOf10_hi[0]))
+#if 0 /* if 1 we get more errors in atof test program ! */
+  else if(power<-288) // use __float128 (if available!)
+    {__float128 r;
+     r=dh;
+     r+=dl;
+     __float128 p10_hi,p10_lo;
+     f128_power10(&p10_hi,&p10_lo,power);// raise 10 to nth power (n can be positive or negative) - return f128_t double result , uses long double f128_t maths internally to give effectively perfect results - even for denormalised numbers
+	 r/=p10_hi;
+	 if(isnormal(rh))
+	 	rl=r-rh;
+	 else rl=0.0;
+	 *oxh=rh;
+	 *oxl=rl;	 	
+  	}
+#else /* original code for negative powers originaly used power<-200 and offset of 2^100 , values below make no difference */    
+  else if(power<-288) // need to do in 2 multiplies rather than 1 as the max -ve exponent for a normalised double is -308. Picked -200 so we keep full precision of double double
+    {if((-power)-288 >= sizeof(NegPowerOf10_hi)/sizeof(NegPowerOf10_hi[0]))
     	{*ohi=0.0; // underflow
     	 *olo=0.0;
     	 return;
     	}
-	 th=NegPowerOf10_hi[200];
-	 tl=NegPowerOf10_lo[200];   
+	 th=NegPowerOf10_hi[288];
+	 tl=NegPowerOf10_lo[288];   
      mult_dd_dd(&xh,&xl,th,tl,dh,dl);// xh/l=th/l*d
      // there is a risk that the next multiply will end up with denormalised numbers and so can be inexact, so multiply by 2^100 first, do multiply then divide back again
-     // we have just divided by 10^200 so the multiply by 2^100 (1.3e30) cannot overflow
-     xh=ldexp(xh,100);// multiply by 2^100
-     xl=ldexp(xl,100);
-	 th=NegPowerOf10_hi[(-power)-200];
-	 tl=NegPowerOf10_lo[(-power)-200];  
+     // we have just divided by 10^288 so the multiply by 2^300 (2.0e90) cannot overflow
+     xh=ldexp(xh,300);// multiply by 2^300
+     xl=ldexp(xl,300);
+	 th=NegPowerOf10_hi[(-power)-288];
+	 tl=NegPowerOf10_lo[(-power)-288];  
 	 mult_dd_dd(&xh,&xl,th,tl,xh,xl);    	 
-     xh=ldexp(xh,-100);// multiply by 2^-100
-     xl=ldexp(xl,-100);
+     xh=ldexp(xh,-300);// multiply by 2^-300
+     xl=ldexp(xl,-300);
 	 *ohi=xh;
 	 *olo=xl;	 
   	}
+#endif  	
   else if(power<0) 	
   	{// can do with one double-double multiply
 	 th=NegPowerOf10_hi[-power];
